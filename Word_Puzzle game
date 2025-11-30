@@ -1,0 +1,1711 @@
+#include <SFML/Graphics.hpp>
+#include <SFML/Window.hpp>
+#include <SFML/System.hpp>
+#include <iostream>
+#include <vector>
+#include <string>
+#include <algorithm>
+#include <ctime>
+#include <cstdlib>
+#include <fstream>
+#include <map>
+#include <random>
+#include <memory>
+#include <sstream>
+#include <cmath>
+
+using namespace std;
+
+// ==================== GAME 1: WORD PUZZLE ADVENTURE ====================
+
+// Constants
+const int MAX_HEALTH = 100;
+const int MAX_LEVEL = 6;
+const int WORD_SCORE = 25;
+const int BONUS_SCORE = 50;
+const int BOSS_LEVEL = 6;
+const int PRACTICE_SCORE = 10;
+const string HIGHSCORE_FILE = "highscore.txt";
+
+// Timer System
+class Timer {
+private:
+    sf::Clock clock;
+    int totalTime;
+    int remainingTime;
+    bool isRunning;
+
+public:
+    Timer() : totalTime(25), remainingTime(25), isRunning(false) {}
+
+    void start(int baseTime = 25) {
+        totalTime = baseTime;
+        remainingTime = totalTime;
+        isRunning = true;
+        clock.restart();
+    }
+
+    void update() {
+        if (isRunning && remainingTime > 0) {
+            int elapsed = static_cast<int>(clock.getElapsedTime().asSeconds());
+            remainingTime = totalTime - elapsed;
+            if (remainingTime < 0) remainingTime = 0;
+        }
+    }
+
+    void stop() {
+        isRunning = false;
+    }
+
+     void addTime(int seconds) {
+        remainingTime += seconds;
+        totalTime += seconds;
+    }
+
+    int getRemainingTime() const { return remainingTime; }
+    int getTotalTime() const { return totalTime; }
+    bool isTimeUp() const { return remainingTime <= 0; }
+    bool isRunningStatus() const { return isRunning; }
+
+    void reset(int baseTime = 25) {
+        totalTime = baseTime;
+        remainingTime = totalTime;
+        isRunning = false;
+    }
+};
+
+// Load and Save High Score
+int loadHighScore() {
+    ifstream file(HIGHSCORE_FILE);
+    int highscore = 0;
+    if (file.is_open()) {
+        if (!(file >> highscore)) highscore = 0;
+        file.close();
+    }
+    return highscore;
+}
+
+void saveHighScore(int score) {
+    ofstream file(HIGHSCORE_FILE, ios::trunc);
+    if (file.is_open()) {
+        file << score;
+        file.close();
+    }
+}
+
+class Player {
+public:
+    string name;
+    int health;
+    int score;
+    int level;
+    vector<string> inventory;
+    int battleWordsSolved;
+    int battleWordsRequired;
+    int wordsRequiredForLevelUp;
+
+    Player(string playerName) : name(playerName), health(MAX_HEALTH), score(0), level(1),
+        battleWordsSolved(0), battleWordsRequired(1), wordsRequiredForLevelUp(2) {
+    }
+
+    void addItem(string item) {
+        inventory.push_back(item);
+    }
+
+    void takeDamage(int damage) {
+        health -= damage;
+        if (health < 0) health = 0;
+    }
+
+    void addScore(int points) {
+        score += points;
+    }
+};
+
+class WordChallenge {
+private:
+    string originalWord;
+    string scrambledWord;
+    string hint;
+    int difficulty;
+
+public:
+    WordChallenge(string word, string hintText, int diff) :
+        originalWord(word), hint(hintText), difficulty(diff) {
+        scrambleWord();
+    }
+
+    void scrambleWord() {
+        scrambledWord = originalWord;
+        random_shuffle(scrambledWord.begin(), scrambledWord.end());
+    }
+
+    bool checkAnswer(string answer) {
+        transform(answer.begin(), answer.end(), answer.begin(), ::toupper);
+        string upperOriginal = originalWord;
+        transform(upperOriginal.begin(), upperOriginal.end(), upperOriginal.begin(), ::toupper);
+        return answer == upperOriginal;
+    }
+
+    string getScrambled() { return scrambledWord; }
+    string getHint() { return hint; }
+    string getOriginal() { return originalWord; }
+    int getDifficulty() { return difficulty; }
+};
+
+class WordAdventureGame {
+private:
+    sf::RenderWindow window;
+    sf::Font font;
+
+    // Background textures
+    sf::Texture mainMenuTexture, gameMenuTexture;
+    sf::Texture battleTexture, treasureTexture, practiceTexture;
+    sf::Texture inventoryTexture, highscoreTexture;
+    sf::Texture nameInputTexture;
+
+    // Level-wise background textures
+    map<int, sf::Texture> levelBackgrounds;
+
+    sf::Sprite currentBackground;
+
+    // Game state
+    Player* player;
+    int currentState; // 0=main menu, 1=game menu, 2=battle, 3=treasure, 4=practice, 5=inventory, 6=game over, 7=name input, 8=high score, 9=result screen
+    string currentInput;
+    string displayMessage;
+    WordChallenge* currentChallenge;
+    bool showWelcomeMessage;
+    string correctAnswer;
+
+    // Game data
+    map<int, vector<WordChallenge>> levelChallenges;
+    map<int, vector<bool>> usedWords;
+    vector<WordChallenge> practiceWords;
+    size_t currentPracticeIndex;
+
+     // Timer System
+    Timer gameTimer;
+
+    vector<string> locations = {
+        "Enchanted Forest",
+        "Dragon's Lair",
+        "Mystic Caves",
+        "Wizard's Tower",
+        "Castle Courtyard",
+        "Dark Lord's Throne Room"
+    };
+
+    map<int, string> enemies = {
+        {1, "Goblin"}, {2, "Troll"}, {3, "Dragon"},
+        {4, "Dark Wizard"}, {5, "Evil King"}, {6, "THE DARK LORD"}
+    };
+
+    void loadBackgroundTextures() {
+        // Load common backgrounds with fallback
+        if (!mainMenuTexture.loadFromFile("projectpic/a2.png")) {
+            cout << "Main menu background load error!" << endl;
+        }
+        if (!gameMenuTexture.loadFromFile("projectpic/mainmenu.png")) {
+            cout << "Game menu background load error!" << endl;
+        }
+        if (!battleTexture.loadFromFile("projectpic/pic1.jpg")) {
+            cout << "Battle background load error!" << endl;
+        }
+        if (!treasureTexture.loadFromFile("projectpic/pic2.png")) {
+            cout << "Treasure background load error!" << endl;
+        }
+        if (!practiceTexture.loadFromFile("projectpic/practice.png")) {
+            cout << "Practice background load error!" << endl;
+        }
+
+          if (!inventoryTexture.loadFromFile("projectpic/inventory.png")) {
+            cout << "Inventory background load error!" << endl;
+        }
+        if (!highscoreTexture.loadFromFile("projectpic/highscore.png")) {
+            cout << "Highscore background load error!" << endl;
+        }
+        if (!nameInputTexture.loadFromFile("projectpic/login interface.png")) {
+            cout << "Name input background load error!" << endl;
+        }
+
+        // Load LEVEL-WISE backgrounds
+        for (int i = 1; i <= MAX_LEVEL; i++) {
+            sf::Texture levelTex;
+            string filename = "projectpic/level_" + to_string(i) + ".png";
+            if (levelTex.loadFromFile(filename)) {
+                levelBackgrounds[i] = levelTex;
+                cout << "Level " << i << " background loaded: " << filename << endl;
+            }
+            else {
+                cout << "Level " << i << " background load error: " << filename << endl;
+                // Fallback to default battle texture
+                levelBackgrounds[i] = battleTexture;
+            }
+        }
+    }
+
+     void setBackgroundForState() {
+        switch (currentState) {
+        case 0: // Main menu
+            currentBackground.setTexture(mainMenuTexture);
+            break;
+        case 1: // Game menu
+            currentBackground.setTexture(gameMenuTexture);
+            break;
+        case 2: // Battle - USE LEVEL-WISE BACKGROUND
+        case 3: // Treasure - USE LEVEL-WISE BACKGROUND
+            if (player && levelBackgrounds.count(player->level)) {
+                currentBackground.setTexture(levelBackgrounds[player->level]);
+            }
+            else {
+                currentBackground.setTexture(battleTexture); // Fallback
+            }
+            break;
+        case 4: // Practice
+            currentBackground.setTexture(practiceTexture);
+            break;
+        case 5: // Inventory
+            currentBackground.setTexture(inventoryTexture);
+            break;
+        case 7: // Name input (LOGIN SYSTEM)
+            currentBackground.setTexture(nameInputTexture);
+            break;
+        case 8: // High score
+            currentBackground.setTexture(highscoreTexture);
+            break;
+        case 9: // Result screen
+            currentBackground.setTexture(gameMenuTexture);
+            break;
+        }
+
+  // Scale background to fit window
+        if (currentBackground.getTexture()) {
+            sf::Vector2u textureSize = currentBackground.getTexture()->getSize();
+            float scaleX = 800.0f / textureSize.x;
+            float scaleY = 600.0f / textureSize.y;
+            currentBackground.setScale(scaleX, scaleY);
+        }
+    }
+
+    void loadChallenges() {
+        levelChallenges[1] = {
+            WordChallenge("KEY", "Opens locked doors", 1),
+            WordChallenge("MAP", "Shows directions", 1),
+            WordChallenge("HAT", "Worn on head", 1),
+            WordChallenge("BED", "For sleeping at night", 1),
+            WordChallenge("CAT", "A furry pet animal", 1),
+            WordChallenge("SUN", "Shines bright up high", 1),
+            WordChallenge("CAR", "Drives on the road", 1),
+            WordChallenge("CUP", "Holds your hot drink", 1)
+        };
+
+        levelChallenges[2] = {
+            WordChallenge("CANDLE", "Provides light", 2),
+            WordChallenge("SHIELD", "Protective equipment", 2),
+            WordChallenge("APPLE", "Common fruit", 2),
+            WordChallenge("TICKET", "Gets you into movies", 2),
+            WordChallenge("PENCIL", "Used for writing and drawing", 2),
+            WordChallenge("ISLAND", "Land surrounded by water", 2),
+            WordChallenge("BUTTON", "You press it on shirts", 2),
+            WordChallenge("ROCKET", "Flies high into space", 2)
+        };
+
+            levelChallenges[3] = {
+            WordChallenge("DRAGON", "Fire-breathing creature", 3),
+            WordChallenge("WIZARD", "Magic user", 3),
+            WordChallenge("CASTLE", "Fortified building", 3),
+            WordChallenge("PYRAMID", "Ancient Egyptian stone structure", 3),
+            WordChallenge("JOURNEY", "A long trip or voyage", 3),
+            WordChallenge("TREASURE", "Chest of gold and jewels", 3),
+            WordChallenge("MYSTERY", "Something puzzling and unknown", 3),
+            WordChallenge("VICTORY", "The act of winning a contest", 3)
+        };
+
+        levelChallenges[4] = {
+            WordChallenge("CRYSTAL", "Magical stone", 4),
+            WordChallenge("TREASURE", "Valuable items", 4),
+            WordChallenge("MYSTERY", "Something puzzling", 4)
+        };
+
+        levelChallenges[5] = {
+            WordChallenge("ENCHANTED", "Magically empowered", 5),
+            WordChallenge("LEGENDARY", "Very famous in history", 5),
+            WordChallenge("ADVENTURE", "Exciting experience", 5)
+        };
+
+        levelChallenges[6] = {
+            WordChallenge("APOCALYPSE", "End of the world", 10),
+            WordChallenge("CATASTROPHE", "Disaster", 10),
+            WordChallenge("RECURSION", "Function calling itself", 10)
+        };
+
+        initializeUsedWords();
+    }
+
+      void loadPracticeWords() {
+        practiceWords = {
+            WordChallenge("ZEBRA", "Black and white striped animal", 0),
+            WordChallenge("PUZZLE", "Brain teaser game", 0),
+            WordChallenge("JAZZ", "Music genre", 0),
+            WordChallenge("ACROBAT", "Circus performer", 0),
+            WordChallenge("ELEPHANT", "Large mammal", 0),
+            WordChallenge("COMPUTER", "Electronic device", 0),
+            WordChallenge("PROGRAMMING", "Coding", 0),
+            WordChallenge("ALGORITHM", "Problem solving steps", 0),
+            WordChallenge("MUZZLE", "Animal mouth cover", 0),
+            WordChallenge("NEBULA", "Space cloud", 0),
+            WordChallenge("OXYGEN", "Essential gas", 0),
+            WordChallenge("PEZ", "Candy dispenser", 0),
+            WordChallenge("QUARTZ", "Hard mineral", 0),
+            WordChallenge("RHUBARB", "Tart plant", 0),
+            WordChallenge("SCUBA", "Underwater breathing", 0),
+            WordChallenge("TSUNAMI", "Giant ocean wave", 0),
+            WordChallenge("UMBRELLA", "Rain protector", 0),
+            WordChallenge("VORTEX", "Whirling mass", 0),
+            WordChallenge("WHIZZ", "Move quickly", 0),
+            WordChallenge("XENON", "Noble gas", 0),
+            WordChallenge("YACHT", "Pleasure boat", 0),
+            WordChallenge("ZODIAC", "Star signs", 0)
+        };
+        currentPracticeIndex = 0;
+    }
+
+    void initializeUsedWords() {
+        for (int i = 1; i <= MAX_LEVEL; i++) {
+            usedWords[i] = vector<bool>(levelChallenges[i].size(), false);
+        }
+    }
+
+WordChallenge getLevelAppropriateChallenge(int level) {
+        vector<WordChallenge>& challenges = levelChallenges[level];
+        vector<bool>& used = usedWords[level];
+
+        vector<int> availableIndices;
+        for (int i = 0; i < challenges.size(); i++) {
+            if (!used[i]) availableIndices.push_back(i);
+        }
+
+        if (availableIndices.empty()) {
+            fill(used.begin(), used.end(), false);
+            availableIndices.resize(challenges.size());
+            for (int i = 0; i < challenges.size(); i++) availableIndices[i] = i;
+        }
+
+        int index = availableIndices[rand() % availableIndices.size()];
+        used[index] = true;
+        return challenges[index];
+    }
+
+    void startBattle() {
+        currentState = 2;
+        player->battleWordsSolved = 0;
+        player->battleWordsRequired = (player->level == BOSS_LEVEL) ? 3 : min(player->level, 3);
+
+        // Start timer with level-based time
+        int baseTime = 25 + (player->level - 1) * 2;
+        gameTimer.start(baseTime);
+
+        string enemy = enemies[player->level];
+        displayMessage = "A wild " + enemy + " appears!\nSolve " + to_string(player->battleWordsRequired) + " words to defeat it!";
+
+          if (player->level == BOSS_LEVEL) {
+            displayMessage = "FINAL BOSS BATTLE!\nTHE DARK LORD challenges you!\nSolve " + to_string(player->battleWordsRequired) + " words to win!";
+        }
+
+        // Load first challenge immediately
+        loadNextBattleChallenge();
+    }
+
+    void startTreasure() {
+        currentState = 3;
+        displayMessage = "You found a treasure chest!\nSolve the challenge to open it!";
+        currentChallenge = new WordChallenge(getLevelAppropriateChallenge(player->level));
+        correctAnswer = currentChallenge->getOriginal();
+
+        // Start timer for treasure
+        int baseTime = 25 + (player->level - 1) * 2;
+        gameTimer.start(baseTime);
+    }
+
+    void startPractice() {
+        currentState = 4;
+        if (practiceWords.empty()) {
+            displayMessage = "No practice words available!";
+            return;
+        }
+
+        if (currentPracticeIndex >= practiceWords.size()) {
+            currentPracticeIndex = 0;
+            random_shuffle(practiceWords.begin(), practiceWords.end());
+        }
+
+           currentChallenge = new WordChallenge(practiceWords[currentPracticeIndex]);
+        correctAnswer = currentChallenge->getOriginal();
+        displayMessage = "";
+
+        // Practice mode-এ টাইমার থাকবে না
+    }
+
+    void loadNextBattleChallenge() {
+        if (player->battleWordsSolved < player->battleWordsRequired) {
+            currentChallenge = new WordChallenge(getLevelAppropriateChallenge(player->level));
+            correctAnswer = currentChallenge->getOriginal();
+        }
+        else {
+            completeBattle();
+        }
+    }
+
+    void completeBattle() {
+        gameTimer.stop();
+        int points = (player->level == BOSS_LEVEL) ? 500 : WORD_SCORE * player->level * 2;
+        player->addScore(points);
+
+        string resultMessage = "*** You defeated the " + enemies[player->level] + "! ***\n+ " + to_string(points) + " points!";
+
+        player->wordsRequiredForLevelUp--;
+        if (player->wordsRequiredForLevelUp <= 0) {
+            player->level++;
+            player->health = MAX_HEALTH;
+            player->wordsRequiredForLevelUp = player->level; // Level-wise words: Level 1=1, Level 2=2, Level 3=3, etc.
+            if (player->level <= MAX_LEVEL) {
+                resultMessage += "\n*** LEVEL UP! Reached " + locations[player->level - 1] + "! ***";
+            }
+        }
+        if (rand() % 2 == 0) {
+            string foundItem = (player->level > 3) ? "MAGIC POTION" : "POTION";
+            player->addItem(foundItem);
+            resultMessage += "\nFound: " + foundItem + "!";
+        }
+
+        displayMessage = resultMessage;
+        currentState = 9;
+        delete currentChallenge;
+        currentChallenge = nullptr;
+    }
+
+    void checkAnswer() {
+        if (!currentChallenge) return;
+
+        bool correct = currentChallenge->checkAnswer(currentInput);
+
+        if (currentState == 2) { // Battle
+            if (correct) {
+                player->battleWordsSolved++;
+                player->addScore(WORD_SCORE * player->level);
+                loadNextBattleChallenge();
+            }
+            else {
+                int damage = 10 * player->level;
+                player->takeDamage(damage);
+                // CORRECT ANSWER SHOW করা হবে না - শুধু damage message
+                displayMessage = "Wrong! The enemy attacks for " + to_string(damage) + " damage!";
+                currentState = 9;
+
+                if (player->health <= 0) {
+                    currentState = 1;
+                    displayMessage = "You were defeated! Returning to menu...";
+                }
+
+                  else {
+                    loadNextBattleChallenge();
+                }
+            }
+        }
+        else if (currentState == 3) { // Treasure
+            if (correct) {
+                vector<string> treasures = { "Gold Coin", "Silver Ring", "Ruby", "Emerald" };
+                string treasure = treasures[rand() % treasures.size()];
+                player->addItem(treasure);
+                player->addScore(BONUS_SCORE);
+                displayMessage = "Correct! Found " + treasure + "!\n+ " + to_string(BONUS_SCORE) + " points!";
+            }
+            else {
+                player->takeDamage(10);
+                // CORRECT ANSWER SHOW করা হবে না - শুধু damage message
+                displayMessage = "Wrong! The chest was trapped!\n-10 health";
+            }
+            currentState = 9;
+            delete currentChallenge;
+            currentChallenge = nullptr;
+        }
+        else if (currentState == 4) { // Practice
+            if (correct) {
+                player->addScore(PRACTICE_SCORE);
+                displayMessage = "Correct! +" + to_string(PRACTICE_SCORE) + " practice points!";
+            }
+            else {
+                // FIX 3: Practice mode-এ ভুল answer দিলে correct answer দেখাবে
+                displayMessage = "Wrong! The correct answer was: " + correctAnswer;
+            }
+
+               currentPracticeIndex++;
+            delete currentChallenge;
+            currentChallenge = nullptr;
+            currentInput = "";
+        }
+
+        currentInput = "";
+        gameTimer.stop();
+    }
+
+    void useItem(int itemIndex) {
+        if (itemIndex < 0 || itemIndex >= player->inventory.size()) return;
+
+        string item = player->inventory[itemIndex];
+        if (item == "POTION") {
+            player->health = min(MAX_HEALTH, player->health + 30);
+            player->inventory.erase(player->inventory.begin() + itemIndex);
+            displayMessage = "Used POTION! +30 health!";
+        }
+        else if (item == "MAGIC POTION") {
+            player->health = min(MAX_HEALTH, player->health + 50);
+            player->inventory.erase(player->inventory.begin() + itemIndex);
+            displayMessage = "Used MAGIC POTION! +50 health!";
+        }
+        currentState = 9;
+    }
+
+   void drawText(sf::RenderWindow& window, const string& text, float x, float y, int size = 24, sf::Color color = sf::Color::White) {
+        sf::Text sfText;
+        sfText.setFont(font);
+        sfText.setString(text);
+        sfText.setCharacterSize(size);
+        sfText.setFillColor(color);
+        sfText.setPosition(x, y);
+        window.draw(sfText);
+    }
+
+    void drawPremiumBox(sf::RenderWindow& window, float x, float y, float width, float height, sf::Color fillColor, sf::Color outlineColor) {
+        // Shadow effect
+        sf::RectangleShape shadow(sf::Vector2f(width + 6, height + 6));
+        shadow.setPosition(x + 3, y + 3);
+        shadow.setFillColor(sf::Color(0, 0, 0, 100));
+        window.draw(shadow);
+
+        // Main box
+        sf::RectangleShape box(sf::Vector2f(width, height));
+        box.setPosition(x, y);
+        box.setFillColor(fillColor);
+        box.setOutlineColor(outlineColor);
+        box.setOutlineThickness(3);
+        window.draw(box);
+
+        // Glossy effect - top highlight
+        sf::RectangleShape highlight(sf::Vector2f(width, height * 0.15f));
+        highlight.setPosition(x, y);
+        highlight.setFillColor(sf::Color(255, 255, 255, 80));
+        window.draw(highlight);
+    }
+
+      // Simple small box for answer input - ছোট করে বাম পাশে
+        sf::RectangleShape box(sf::Vector2f(width, height));
+        box.setPosition(x, y);
+        box.setFillColor(sf::Color(0, 0, 0, 180));
+        box.setOutlineColor(sf::Color::Green);
+        box.setOutlineThickness(2);
+        window.draw(box);
+    }
+
+    void drawHealthBar(sf::RenderWindow& window, float x, float y, float width, float height, int currentHealth, int maxHealth) {
+        // Background
+        sf::RectangleShape bg(sf::Vector2f(width, height));
+        bg.setPosition(x, y);
+        bg.setFillColor(sf::Color(50, 50, 50, 200));
+        bg.setOutlineColor(sf::Color::White);
+        bg.setOutlineThickness(2);
+        window.draw(bg);
+
+        // Health fill
+        float healthPercent = static_cast<float>(currentHealth) / maxHealth;
+        sf::RectangleShape health(sf::Vector2f(width * healthPercent, height));
+        health.setPosition(x, y);
+
+        if (healthPercent > 0.6) health.setFillColor(sf::Color(0, 255, 0, 200));
+        else if (healthPercent > 0.3) health.setFillColor(sf::Color(255, 255, 0, 200));
+        else health.setFillColor(sf::Color(255, 0, 0, 200));
+
+        window.draw(health);
+
+        // Health text with percentage
+        string healthText = to_string(currentHealth) + "/" + to_string(maxHealth) + " (" + to_string(static_cast<int>(healthPercent * 100)) + "%)";
+        drawText(window, healthText, x + width / 2 - 50, y + height / 2 - 10, 16, sf::Color::White);
+    }
+
+     void drawTimerBar(sf::RenderWindow& window, float x, float y, float width, float height) {
+        // Update timer
+        gameTimer.update();
+
+        // Background
+        sf::RectangleShape bg(sf::Vector2f(width, height));
+        bg.setPosition(x, y);
+        bg.setFillColor(sf::Color(50, 50, 50, 200));
+        bg.setOutlineColor(sf::Color::White);
+        bg.setOutlineThickness(2);
+        window.draw(bg);
+
+        // Timer fill
+        float timePercent = gameTimer.getRemainingTime() > 0 ?
+            static_cast<float>(gameTimer.getRemainingTime()) / gameTimer.getTotalTime() : 0.0f;
+
+        sf::RectangleShape timerFill(sf::Vector2f(width * timePercent, height));
+        timerFill.setPosition(x, y);
+
+        // Color changes based on remaining time
+        if (timePercent > 0.6) timerFill.setFillColor(sf::Color(0, 200, 255, 200)); // Blue
+        else if (timePercent > 0.3) timerFill.setFillColor(sf::Color(255, 165, 0, 200)); // Orange
+        else timerFill.setFillColor(sf::Color(255, 0, 0, 200)); // Red
+
+        window.draw(timerFill);
+
+        // Timer text
+        string timerText = "Time: " + to_string(gameTimer.getRemainingTime()) + "s";
+        drawText(window, timerText, x + width / 2 - 40, y + height / 2 - 10, 16, sf::Color::White);
+
+  // Check if time's up
+        if (gameTimer.isTimeUp() && gameTimer.isRunningStatus()) {
+            // Time's up হলে correct answer show করা হবে না
+            displayMessage = "Time's up!";
+            if (currentState == 2) {
+                int damage = 5 * player->level;
+                player->takeDamage(damage);
+                displayMessage += "\nYou took " + to_string(damage) + " damage!";
+                if (player->health <= 0) {
+                    currentState = 1;
+                    displayMessage = "You were defeated! Returning to menu...";
+                }
+                else {
+                    loadNextBattleChallenge();
+                }
+            }
+            currentState = 9;
+            gameTimer.stop();
+        }
+    }
+
+public:
+    WordAdventureGame() : window(sf::VideoMode(800, 600), "Word Puzzle Adventure") {
+        srand(time(0));
+
+        if (!font.loadFromFile("arial.ttf")) {
+            if (!font.loadFromFile("C:/Windows/Fonts/arial.ttf")) {
+                cout << "Font load error!" << endl;
+            }
+        }
+  loadBackgroundTextures();
+        loadChallenges();
+        loadPracticeWords();
+        player = nullptr;
+        currentState = 0;
+        currentChallenge = nullptr;
+        currentInput = "";
+        displayMessage = "";
+        showWelcomeMessage = true;
+        correctAnswer = "";
+    }
+
+    void run() {
+        while (window.isOpen()) {
+            sf::Event event;
+            while (window.pollEvent(event)) {
+                if (event.type == sf::Event::Closed)
+                    window.close();
+
+                if (event.type == sf::Event::TextEntered) {
+                    if ((currentState >= 2 && currentState <= 4) || currentState == 7) {
+                        if (event.text.unicode == '\b') {
+                            if (!currentInput.empty()) currentInput.pop_back();
+                        }
+                        else if (event.text.unicode == '\r') {
+                            if (currentState >= 2 && currentState <= 4) {
+                                if (currentState == 4 && !currentChallenge) {
+                                    startPractice();
+                                }
+                                else {
+                                    checkAnswer();
+                                }
+                            }
+
+                             else if (currentState == 7) {
+                                if (!currentInput.empty()) {
+                                    player = new Player(currentInput);
+                                    currentState = 1;
+                                    displayMessage = "Welcome " + player->name + "! Press 1-5 to continue.";
+                                    currentInput = ""; // Clear input after login
+                                }
+                            }
+                        }
+                        else if (event.text.unicode < 128 && currentInput.length() < 20) {
+                            char c = static_cast<char>(event.text.unicode);
+                            // FIX: নাম ইনপুটে শুধুমাত্র লেটার, স্পেস এবং কিছু বিশেষ ক্যারেক্টার গ্রহণ করবে
+                            if (currentState == 7) {
+                                if (isalpha(c) || c == ' ' || c == '.' || c == '-') {
+                                    currentInput += c;
+                                }
+                            }
+                            else if (!isdigit(c)) {
+                                currentInput += c;
+                            }
+                        }
+                    }
+                }
+
+                if (event.type == sf::Event::KeyPressed) {
+                    // ESC key - always goes back to appropriate menu
+                    if (event.key.code == sf::Keyboard::Escape) {
+                        if (currentState == 0) window.close();
+                        else currentState = 1; // Any state to Game menu
+
+                        if (currentChallenge) {
+                            delete currentChallenge;
+                            currentChallenge = nullptr;
+                        }
+
+                         gameTimer.stop();
+                    }
+
+                    if (event.key.code == sf::Keyboard::Return) {
+                        if (currentState == 9) {
+                            currentState = 1;
+                            displayMessage = "";
+                        }
+                    }
+
+                    // Number keys for menu selection - ONLY in main menu
+                    if (currentState == 0 && event.key.code >= sf::Keyboard::Num1 && event.key.code <= sf::Keyboard::Num2) {
+                        int choice = event.key.code - sf::Keyboard::Num1 + 1;
+                        if (choice == 1) {
+                            currentState = 7; // Go to LOGIN SYSTEM
+                            currentInput = ""; // FIX 1: নাম ইনপুট সবসময় খালি থাকবে
+                        }
+                        else if (choice == 2) {
+                            window.close();
+                        }
+                    }
+
+                    // Number keys for game menu - ONLY in game menu (state 1)
+                    if (currentState == 1 && event.key.code >= sf::Keyboard::Num1 && event.key.code <= sf::Keyboard::Num5) {
+                        int choice = event.key.code - sf::Keyboard::Num1 + 1;
+                        handleGameChoice(choice);
+                    }
+
+                        // Number keys for inventory - ONLY in inventory screen (state 5)
+                    if (currentState == 5 && event.key.code >= sf::Keyboard::Num1 && event.key.code <= sf::Keyboard::Num9) {
+                        int choice = event.key.code - sf::Keyboard::Num1;
+                        if (choice < player->inventory.size()) {
+                            useItem(choice);
+                        }
+                    }
+                }
+            }
+
+            window.clear(sf::Color(30, 30, 60));
+            setBackgroundForState();
+            if (currentBackground.getTexture()) {
+                window.draw(currentBackground);
+            }
+
+            // Semi-transparent overlay
+            sf::RectangleShape overlay(sf::Vector2f(800, 600));
+            overlay.setFillColor(sf::Color(0, 0, 0, 80));
+            window.draw(overlay);
+
+            // Draw appropriate screen
+            if (currentState == 0) drawMainMenu();
+            else if (currentState == 1) drawGameMenu();
+            else if (currentState == 2) drawBattleScreen();
+            else if (currentState == 3) drawTreasureScreen();
+            else if (currentState == 4) drawPracticeScreen();
+            else if (currentState == 5) drawInventoryScreen();
+            else if (currentState == 7) drawNameInputScreen();
+            else if (currentState == 8) drawHighScoreScreen();
+            else if (currentState == 9) drawResultScreen();
+ window.display();
+        }
+
+        if (player) {
+            if (player->score > loadHighScore()) {
+                saveHighScore(player->score);
+            }
+            delete player;
+        }
+        if (currentChallenge) {
+            delete currentChallenge;
+        }
+    }
+
+private:
+    void handleGameChoice(int choice) {
+        switch (choice) {
+        case 1: // Continue Journey
+            if (rand() % 2 == 0) startBattle();
+            else startTreasure();
+            break;
+        case 2: // Practice
+            startPractice();
+            break;
+        case 3: // Use Item
+            currentState = 5;
+            break;
+        case 4: // High Score
+            currentState = 8;
+            break;
+        case 5: // Quit to Main Menu
+            currentState = 0;
+            break;
+        }
+    }
+  void drawMainMenu() {
+        // FRONT INTERFACE - Game Title Center
+        drawText(window, "WORD PUZZLE ADVENTURE", 150, 150, 48, sf::Color::Yellow);
+        drawText(window, "1. Start New Game", 320, 280, 32, sf::Color::Green);
+        drawText(window, "2. Exit", 320, 330, 32, sf::Color::Red);
+        drawText(window, "Press ESC to close window", 280, 450, 20, sf::Color::Cyan);
+    }
+
+    void drawGameMenu() {
+        // GAME MENU - PREMIUM COLORFUL BOXES for 5 items
+        drawText(window, "GAME MENU", 320, 50, 36, sf::Color::Cyan);
+
+        // Player Info Section - FIX 2: Game menu থেকে words needed রিমুভ করা হয়েছে
+        // শুধুমাত্র player info-তে words needed দেখানো হবে
+
+        // 5 Premium Colorful Boxes
+        drawPremiumBox(window, 150, 100, 500, 70, sf::Color(30, 144, 255, 200), sf::Color::White); // Blue
+        drawText(window, "1. CONTINUE JOURNEY", 280, 120, 28, sf::Color::White);
+
+        drawPremiumBox(window, 150, 180, 500, 70, sf::Color(46, 139, 87, 200), sf::Color::White); // Green
+        drawText(window, "2. PRACTICE CHALLENGES", 280, 200, 28, sf::Color::White);
+
+        drawPremiumBox(window, 150, 260, 500, 70, sf::Color(255, 140, 0, 200), sf::Color::White); // Orange
+        drawText(window, "3. USE ITEM", 280, 280, 28, sf::Color::White);
+
+        drawPremiumBox(window, 150, 340, 500, 70, sf::Color(147, 112, 219, 200), sf::Color::White); // Purple
+        drawText(window, "4. VIEW HIGH SCORE", 280, 360, 28, sf::Color::White);
+
+        drawPremiumBox(window, 150, 420, 500, 70, sf::Color(220, 20, 60, 200), sf::Color::White); // Red
+        drawText(window, "5. QUIT TO MAIN MENU", 280, 440, 28, sf::Color::White);
+   // Show messages if any
+        if (!displayMessage.empty()) {
+            drawText(window, displayMessage, 280, 520, 20, sf::Color::Yellow);
+        }
+    }
+
+    void drawBattleScreen() {
+        // Player info
+        drawText(window, "Player: " + player->name, 40, 30, 22, sf::Color::White);
+        drawText(window, "Level: " + to_string(player->level), 40, 60, 22, sf::Color::Cyan);
+        drawText(window, "Location: " + locations[player->level - 1], 40, 90, 18, sf::Color::Yellow);
+        drawText(window, "Score: " + to_string(player->score), 500, 30, 22, sf::Color::Yellow);
+
+        // FIX 2: Words per level info - শুধুমাত্র player info-তে দেখানো হচ্ছে
+        string wordsInfo = "Words needed: " + to_string(player->wordsRequiredForLevelUp);
+        drawText(window, wordsInfo, 500, 120, 18, sf::Color::Cyan);
+
+        // Health and Timer bars
+        drawText(window, "Health:", 500, 60, 20, sf::Color::White);
+        drawHealthBar(window, 580, 60, 150, 20, player->health, MAX_HEALTH);
+
+        drawText(window, "Timer:", 500, 90, 20, sf::Color::White);
+        drawTimerBar(window, 580, 90, 150, 20);
+
+        string enemy = enemies[player->level];
+
+        // Battle info
+        drawText(window, "BATTLE!", 350, 140, 36, sf::Color::Red);
+        drawText(window, "Enemy: " + enemy, 70, 190, 28, sf::Color::Red);
+        drawText(window, "Progress: " + to_string(player->battleWordsSolved) + "/" + to_string(player->battleWordsRequired), 70, 230, 24, sf::Color::Yellow);
+   if (currentChallenge) {
+            // Challenge info
+            drawText(window, "Unscramble: " + currentChallenge->getScrambled(), 70, 290, 28, sf::Color::Cyan);
+            drawText(window, "Hint: " + currentChallenge->getHint(), 70, 330, 24, sf::Color::Yellow);
+        }
+
+        // ছোট ANSWER BOX - বাম পাশে (50, 400) position-এ, width 400px
+        drawSmallAnswerBox(window, 50, 400, 400, 50);
+        drawText(window, "Your answer: " + currentInput, 60, 415, 24, sf::Color::Green);
+        drawText(window, "Press ENTER to submit", 60, 470, 18, sf::Color::White);
+    }
+
+    void drawTreasureScreen() {
+        // Player info
+        drawText(window, "Player: " + player->name, 40, 30, 22, sf::Color::White);
+        drawText(window, "Level: " + to_string(player->level), 40, 60, 22, sf::Color::Cyan);
+        drawText(window, "Location: " + locations[player->level - 1], 40, 90, 18, sf::Color::Yellow);
+        drawText(window, "Score: " + to_string(player->score), 500, 30, 22, sf::Color::Yellow);
+
+        // FIX 2: Words per level info - শুধুমাত্র player info-তে দেখানো হচ্ছে
+        string wordsInfo = "Words needed: " + to_string(player->wordsRequiredForLevelUp);
+        drawText(window, wordsInfo, 500, 120, 18, sf::Color::Cyan);
+
+        // Health and Timer bars
+        drawText(window, "Health:", 500, 60, 20, sf::Color::White);
+        drawHealthBar(window, 580, 60, 150, 20, player->health, MAX_HEALTH);
+
+        drawText(window, "Timer:", 500, 90, 20, sf::Color::White);
+        drawTimerBar(window, 580, 90, 150, 20);
+  // Treasure info
+        drawText(window, "TREASURE CHEST!", 300, 140, 36, sf::Color::Yellow);
+
+        if (currentChallenge) {
+            // Challenge info
+            drawText(window, "Unscramble: " + currentChallenge->getScrambled(), 70, 200, 28, sf::Color::Cyan);
+            drawText(window, "Hint: " + currentChallenge->getHint(), 70, 240, 24, sf::Color::Yellow);
+        }
+
+        // ছোট ANSWER BOX - বাম পাশে (50, 300) position-এ, width 400px
+        drawSmallAnswerBox(window, 50, 300, 400, 50);
+        drawText(window, "Your answer: " + currentInput, 60, 315, 24, sf::Color::Green);
+        drawText(window, "Press ENTER to submit", 60, 370, 18, sf::Color::White);
+    }
+
+    void drawPracticeScreen() {
+        // Header
+        drawText(window, "PRACTICE MODE", 320, 50, 36, sf::Color::Green);
+
+        // Practice mode-এ টাইমার থাকবে না, তাই Timer bar দেখানো হচ্ছে না
+
+        if (currentChallenge) {
+            // Challenge info
+            drawText(window, "Unscramble: " + currentChallenge->getScrambled(), 70, 120, 28, sf::Color::Cyan);
+            drawText(window, "Hint: " + currentChallenge->getHint(), 70, 160, 24, sf::Color::Yellow);
+
+            // ছোট ANSWER BOX
+            drawSmallAnswerBox(window, 50, 200, 400, 50);
+            drawText(window, "Your answer: " + currentInput, 60, 215, 24, sf::Color::Green);
+            drawText(window, "Press ENTER to submit", 60, 270, 18, sf::Color::White);
+        }
+  else {
+            // Next word prompt
+            drawText(window, "Press ENTER for next word", 250, 200, 28, sf::Color::Cyan);
+        }
+
+        // Show practice result message (ভুল answer দিলে correct answer এখানে দেখাবে)
+        if (!displayMessage.empty()) {
+            drawText(window, displayMessage, 70, 330, 20, sf::Color::Yellow);
+        }
+    }
+
+    void drawInventoryScreen() {
+        // Inventory
+        drawText(window, "INVENTORY", 350, 50, 36, sf::Color::Magenta);
+
+        if (player->inventory.empty()) {
+            drawText(window, "Your inventory is empty!", 300, 200, 28, sf::Color::White);
+        }
+        else {
+            // Show items
+            for (int i = 0; i < player->inventory.size(); i++) {
+                drawText(window, to_string(i + 1) + ". " + player->inventory[i], 300, 150 + i * 40, 24, sf::Color::White);
+            }
+            drawText(window, "Press 1-" + to_string(player->inventory.size()) + " to use item", 250, 400, 20, sf::Color::Yellow);
+        }
+
+        drawText(window, "Press ESC to return to menu", 300, 450, 20, sf::Color::White);
+    }
+
+    void drawNameInputScreen() {
+// LOGIN SYSTEM
+        drawText(window, "Enter your name:", 300, 200, 32, sf::Color::White);
+
+        // Small box for name input - CLEAN এবং সবসময় খালি
+        drawSmallAnswerBox(window, 250, 250, 300, 40);
+        drawText(window, currentInput, 260, 260, 28, sf::Color::Green);
+
+        drawText(window, "Press ENTER to continue", 280, 320, 20, sf::Color::Yellow);
+    }
+
+    void drawHighScoreScreen() {
+        // High score
+        drawText(window, "HIGH SCORES", 320, 100, 36, sf::Color::Yellow);
+        drawText(window, "Current High Score: " + to_string(loadHighScore()), 250, 180, 28, sf::Color::Cyan);
+        if (player) {
+            drawText(window, "Your Score: " + to_string(player->score), 250, 230, 28, sf::Color::Green);
+        }
+        drawText(window, "Press ESC to return", 300, 300, 24, sf::Color::White);
+    }
+
+    void drawResultScreen() {
+        // Result
+        if (showWelcomeMessage) {
+            drawText(window, "WELCOME!", 320, 150, 36, sf::Color::Yellow);
+            showWelcomeMessage = false;
+        }
+        else {
+            drawText(window, "RESULT", 350, 150, 36, sf::Color::Yellow);
+        }
+  // Split message into lines and display
+        vector<string> lines;
+        size_t start = 0;
+        size_t end = displayMessage.find('\n');
+        while (end != string::npos) {
+            lines.push_back(displayMessage.substr(start, end - start));
+            start = end + 1;
+            end = displayMessage.find('\n', start);
+        }
+        lines.push_back(displayMessage.substr(start));
+
+        for (int i = 0; i < lines.size(); i++) {
+            sf::Color color = sf::Color::White;
+            if (lines[i].find("LEVEL UP") != string::npos) color = sf::Color::Green;
+            else if (lines[i].find("Wrong") != string::npos) color = sf::Color::Red;
+            else if (lines[i].find("Found") != string::npos) color = sf::Color::Cyan;
+            else if (lines[i].find("Used") != string::npos) color = sf::Color::Magenta;
+
+            drawText(window, lines[i], 120, 220 + i * 30, 22, color);
+        }
+
+        drawText(window, "Press ENTER to continue", 280, 400, 24, sf::Color::Yellow);
+    }
+};
+
+// ==================== GAME 2: WORD SEARCH PRO ====================
+
+// USER SYSTEM
+struct UserProfile {
+    std::string username;
+    std::string password;
+    int highScore;
+    int gamesPlayed;
+    int totalScore;
+    UserProfile() : highScore(0), gamesPlayed(0), totalScore(0) {}
+    UserProfile(const std::string& u, const std::string& p)
+        : username(u), password(p), highScore(0), gamesPlayed(0), totalScore(0) {
+    }
+};
+
+class UserManager {
+private:
+    std::vector<UserProfile> users;
+    UserProfile* currentUser;
+    const std::string dataFile = "users.dat";
+public:
+    UserManager() : currentUser(nullptr) { loadUsers(); }
+    void loadUsers() {
+        std::ifstream file(dataFile);
+        if (!file.is_open()) return;
+        std::string line;
+        while (std::getline(file, line)) {
+            std::istringstream iss(line);
+            std::string username, password;
+            int highScore, gamesPlayed, totalScore;
+            if (iss >> username >> password >> highScore >> gamesPlayed >> totalScore) {
+                UserProfile user(username, password);
+                user.highScore = highScore;
+                user.gamesPlayed = gamesPlayed;
+                user.totalScore = totalScore;
+                users.push_back(user);
+            }
+        }
+    }
+    void saveUsers() {
+        std::ofstream file(dataFile);
+for (const auto& user : users) {
+            file << user.username << " " << user.password << " "
+                << user.highScore << " " << user.gamesPlayed << " "
+                << user.totalScore << "\n";
+        }
+    }
+    bool login(const std::string& username, const std::string& password) {
+        for (auto& user : users) {
+            if (user.username == username && user.password == password) {
+                currentUser = &user;
+                return true;
+            }
+        }
+        return false;
+    }
+    bool registerUser(const std::string& username, const std::string& password) {
+        for (const auto& user : users) if (user.username == username) return false;
+        users.emplace_back(username, password);
+        saveUsers();
+        return true;
+    }
+    bool isLoggedIn() const { return currentUser != nullptr; }
+    UserProfile* getCurrentUser() { return currentUser; }
+    void logout() { currentUser = nullptr; }
+    void updateUserStats(int score) {
+        if (currentUser) {
+            currentUser->gamesPlayed++;
+            currentUser->totalScore += score;
+            if (score > currentUser->highScore) currentUser->highScore = score;
+            saveUsers();
+        }
+    }
+};
+
+// UI BUTTON
+class Button {
+private:
+    sf::RectangleShape shape;
+    sf::Text text;
+    sf::Color normalColor, hoverColor, clickColor;
+    bool isHovered, isClicked;
+public:
+    Button(const std::string& btnText, sf::Font& font, unsigned int charSize,
+        sf::Vector2f size, sf::Color normal, sf::Color hover, sf::Color click)
+        : normalColor(normal), hoverColor(hover), clickColor(click),
+        isHovered(false), isClicked(false) {
+        shape.setSize(size);
+        shape.setFillColor(normalColor);
+        shape.setOutlineThickness(2);
+        shape.setOutlineColor(sf::Color::White);
+        text.setFont(font);
+        text.setString(btnText);
+        text.setCharacterSize(charSize);
+        text.setFillColor(sf::Color::White);
+        text.setStyle(sf::Text::Bold);
+        auto b = text.getLocalBounds();
+        text.setOrigin(b.left + b.width / 2.f, b.top + b.height / 2.f);
+    }
+    void setPosition(sf::Vector2f position) {
+        shape.setPosition(position);
+        text.setPosition(position.x + shape.getSize().x / 2.f,
+            position.y + shape.getSize().y / 2.f);
+    }
+    void update(sf::Vector2f mousePos, bool mousePressed) {
+        isHovered = shape.getGlobalBounds().contains(mousePos);
+        if (isHovered && mousePressed) {
+            isClicked = true; shape.setFillColor(clickColor);
+        }
+ else if (isHovered) {
+            isClicked = false; shape.setFillColor(hoverColor);
+        }
+        else {
+            isClicked = false; shape.setFillColor(normalColor);
+        }
+    }
+    bool isButtonClicked() const { return isClicked; }
+    void setLabel(const std::string& s) {
+        text.setString(s);
+        auto b = text.getLocalBounds();
+        text.setOrigin(b.left + b.width / 2.f, b.top + b.height / 2.f);
+        sf::Vector2f pos = shape.getPosition();
+        text.setPosition(pos.x + shape.getSize().x / 2.f, pos.y + shape.getSize().y / 2.f);
+    }
+    void draw(sf::RenderWindow& window) { window.draw(shape); window.draw(text); }
+};
+
+// TEXT INPUT BOX
+class TextBox {
+private:
+    sf::RectangleShape shape;
+    sf::Text text;
+    std::string inputString;
+    bool isFocused;
+public:
+    TextBox(sf::Font& font, unsigned int charSize, sf::Vector2f size)
+        : isFocused(false) {
+        shape.setSize(size);
+        shape.setFillColor(sf::Color(45, 55, 72));
+        shape.setOutlineThickness(2);
+        shape.setOutlineColor(sf::Color(74, 85, 104));
+        text.setFont(font);
+text.setCharacterSize(charSize);
+        text.setFillColor(sf::Color::White);
+    }
+    void setPosition(sf::Vector2f position) {
+        shape.setPosition(position);
+        text.setPosition(position.x + 10.f, position.y + 8.f);
+    }
+    void handleInput(sf::Uint32 unicode) {
+        if (!isFocused) return;
+        if (unicode == 8 && !inputString.empty()) { inputString.pop_back(); }
+        else if (unicode >= 32 && unicode < 127 && inputString.length() < 20) {
+            inputString += static_cast<char>(unicode);
+        }
+        text.setString(inputString);
+    }
+    void update(sf::Vector2f mousePos) {
+        isFocused = shape.getGlobalBounds().contains(mousePos);
+        shape.setOutlineColor(isFocused ? sf::Color(56, 178, 172) : sf::Color(74, 85, 104));
+    }
+    std::string getText() const { return inputString; }
+    void clear() { inputString.clear(); text.setString(""); }
+    bool isFocusedBox() const { return isFocused; }
+    void draw(sf::RenderWindow& window) { window.draw(shape); window.draw(text); }
+};
+
+// IMPROVED PARTICLE SYSTEM
+class ParticleSystem : public sf::Drawable, public sf::Transformable {
+private:
+    struct Particle {
+        sf::Vector2f velocity;
+        sf::Time lifetime;
+        sf::Vector2f position;
+        sf::Color color;
+        float size;
+    };
+    std::vector<Particle> particles;
+    sf::VertexArray vertices;
+    sf::Time lifetime;
+    sf::Vector2f emitter;
+    bool emitting;
+
+    virtual void draw(sf::RenderTarget& target, sf::RenderStates states) const {
+        states.transform *= getTransform();
+        states.texture = nullptr;
+        target.draw(vertices, states);
+    }
+
+    void resetParticle(std::size_t i) {
+        float angle = (std::rand() % 360) * 3.14159f / 180.f;
+        float speed = (std::rand() % 100) + 100.f; // Faster particles
+        particles[i].velocity = sf::Vector2f(std::cos(angle) * speed, std::sin(angle) * speed);
+        particles[i].lifetime = sf::milliseconds((std::rand() % 1500) + 1000); // Longer lifetime
+        particles[i].position = emitter;
+        particles[i].size = (std::rand() % 8) + 4.0f; // Bigger particles
+
+ static sf::Color colors[] = {
+            {255, 50, 50},    // Bright Red
+            {50, 255, 50},    // Bright Green  
+            {50, 50, 255},    // Bright Blue
+            {255, 255, 50},   // Bright Yellow
+            {255, 50, 255},   // Bright Magenta
+            {50, 255, 255}    // Bright Cyan
+        };
+        particles[i].color = colors[std::rand() % 6];
+
+        // Set particle size
+        vertices[i * 4 + 0].position = emitter + sf::Vector2f(-particles[i].size, -particles[i].size);
+        vertices[i * 4 + 1].position = emitter + sf::Vector2f(particles[i].size, -particles[i].size);
+        vertices[i * 4 + 2].position = emitter + sf::Vector2f(particles[i].size, particles[i].size);
+        vertices[i * 4 + 3].position = emitter + sf::Vector2f(-particles[i].size, particles[i].size);
+
+        for (int j = 0; j < 4; ++j) {
+            vertices[i * 4 + j].color = particles[i].color;
+        }
+    }
+
+public:
+    ParticleSystem(unsigned int count)
+        : particles(count), vertices(sf::Quads, count * 4),
+        lifetime(sf::seconds(2.5f)), emitting(false) {
+        for (std::size_t i = 0; i < particles.size(); ++i) {
+            particles[i].lifetime = sf::Time::Zero;
+            for (int j = 0; j < 4; ++j) {
+                vertices[i * 4 + j].color = sf::Color::Transparent;
+            }
+        }
+    }
+void setEmitter(sf::Vector2f pos) { emitter = pos; }
+    void startEmission() { emitting = true; }
+    void stopEmission() { emitting = false; }
+
+    void update(sf::Time dt) {
+        for (std::size_t i = 0; i < particles.size(); ++i) {
+            auto& p = particles[i];
+
+            if (p.lifetime <= sf::Time::Zero) {
+                if (emitting) {
+                    resetParticle(i);
+                }
+                else {
+                    for (int j = 0; j < 4; ++j) {
+                        vertices[i * 4 + j].color = sf::Color::Transparent;
+                    }
+                    continue;
+                }
+            }
+
+            p.lifetime -= dt;
+            p.position += p.velocity * dt.asSeconds();
+
+            // Update particle positions
+            vertices[i * 4 + 0].position = p.position + sf::Vector2f(-p.size, -p.size);
+            vertices[i * 4 + 1].position = p.position + sf::Vector2f(p.size, -p.size);
+            vertices[i * 4 + 2].position = p.position + sf::Vector2f(p.size, p.size);
+            vertices[i * 4 + 3].position = p.position + sf::Vector2f(-p.size, p.size);
+
+            float ratio = std::max(0.f, p.lifetime.asSeconds() / lifetime.asSeconds());
+            sf::Uint8 alpha = static_cast<sf::Uint8>(ratio * 255);
+ for (int j = 0; j < 4; ++j) {
+                vertices[i * 4 + j].color.a = alpha;
+            }
+        }
+    }
+};
+
+// GAME STATE
+enum class GameState { LOGIN, MENU, GAME_EASY, GAME_MEDIUM, GAME_HARD };
+
+// MAIN GAME
+class WordSearchGame {
+private:
+    const int WINDOW_W = 1400;
+    const int WINDOW_H = 900;
+    sf::RenderWindow window;
+    sf::Font mainFont;
+    sf::Font titleFont;
+
+    int GRID_SIZE;
+    int CELL_SIZE;
+    int PANEL_WIDTH;
+    float marginX;
+    float marginY;
+
+    float timeLimit;
+    float timeRemaining;
+    int score;
+    bool gameRunning;
+    bool gameWon;
+    bool gamePaused;
+
+    int hintsRemaining;
+    bool showHint;
+    float hintDisplayDuration;
+sf::Clock hintClock;
+    std::vector<std::vector<bool>> highlightGrid;
+
+    sf::Clock particleBurstClock;
+    bool isParticleBursting;
+
+    std::vector<std::vector<char>> grid;
+    std::vector<std::string> wordList;
+    std::vector<std::string> foundWords;
+    std::vector<sf::Vector2i> selectedCells;
+    std::vector<std::pair<sf::Vector2i, sf::Vector2i>> foundWordPositions;
+
+    UserManager userManager;
+    GameState gameState;
+
+    std::unique_ptr<TextBox> usernameBox;
+    std::unique_ptr<TextBox> passwordBox;
+    std::unique_ptr<Button> loginButton;
+    std::unique_ptr<Button> registerButton;
+    std::string loginError;
+    sf::Clock errorClock;
+
+    std::unique_ptr<Button> easyButton;
+    std::unique_ptr<Button> mediumButton;
+    std::unique_ptr<Button> hardButton;
+    std::unique_ptr<Button> hintButton;
+    std::unique_ptr<Button> pauseButton;
+    std::unique_ptr<Button> restartButton;
+    std::unique_ptr<Button> logoutButton;
+
+    std::unique_ptr<ParticleSystem> particleSystem;
+    float cellPulseTime;
+
+    sf::Color bgColor{ 26,32,44 };
+  sf::Color gridColor{ 74,85,104 };
+    sf::Color cellColor{ 226,232,240 };
+    sf::Color selectedColor{ 72,187,120 };
+    sf::Color foundColor{ 255, 105, 180 }; // Bright Pink for better visibility
+    sf::Color hintColor{ 255, 215, 0 };
+    sf::Color textColor{ 45,55,72 };
+
+public:
+    WordSearchGame()
+        : window(sf::VideoMode(WINDOW_W, WINDOW_H), "Word Search Pro", sf::Style::Close),
+        GRID_SIZE(12), CELL_SIZE(45), PANEL_WIDTH(260),
+        marginX(80), marginY(80),
+        timeLimit(300.f), timeRemaining(300.f), score(0),
+        gameRunning(false), gameWon(false), gamePaused(false),
+        hintsRemaining(3), showHint(false), hintDisplayDuration(2.0f),
+        gameState(GameState::LOGIN), cellPulseTime(0.f), isParticleBursting(false) {
+
+        std::srand(static_cast<unsigned>(std::time(nullptr)));
+        loadFonts();
+        initLoginUI();
+        window.setFramerateLimit(60);
+    }
+
+    void loadFonts() {
+        if (!mainFont.loadFromFile("arial.ttf")) {
+            if (!mainFont.loadFromFile("C:/Windows/Fonts/arial.ttf")) {
+                std::cerr << "Warning: Using default font" << std::endl;
+            }
+        }
+        titleFont = mainFont;
+    }
+void initLoginUI() {
+        usernameBox = std::make_unique<TextBox>(mainFont, 24, sf::Vector2f(400, 50));
+        passwordBox = std::make_unique<TextBox>(mainFont, 24, sf::Vector2f(400, 50));
+        usernameBox->setPosition({ 500,300 });
+        passwordBox->setPosition({ 500,400 });
+        loginButton = std::make_unique<Button>("LOGIN", mainFont, 24, sf::Vector2f(180, 50),
+            sf::Color(72, 187, 120), sf::Color(56, 158, 94), sf::Color(40, 112, 67));
+        registerButton = std::make_unique<Button>("REGISTER", mainFont, 24, sf::Vector2f(180, 50),
+            sf::Color(159, 122, 234), sf::Color(140, 100, 200), sf::Color(100, 70, 160));
+        loginButton->setPosition({ 450,500 });
+        registerButton->setPosition({ 720,500 });
+    }
+
+    void initMenu() {
+        easyButton = std::make_unique<Button>("EASY", mainFont, 34, sf::Vector2f(280, 110),
+            sf::Color(72, 187, 120), sf::Color(56, 158, 94), sf::Color(40, 112, 67));
+        mediumButton = std::make_unique<Button>("MEDIUM", mainFont, 34, sf::Vector2f(280, 110),
+            sf::Color(246, 173, 85), sf::Color(237, 137, 54), sf::Color(213, 119, 34));
+        hardButton = std::make_unique<Button>("HARD", mainFont, 34, sf::Vector2f(280, 110),
+            sf::Color(231, 76, 60), sf::Color(205, 53, 34), sf::Color(165, 33, 14));
+        easyButton->setPosition({ 180,360 });
+        mediumButton->setPosition({ 560,360 });
+        hardButton->setPosition({ 940,360 });
+        gameState = GameState::MENU;
+    }
+
+    void initGame(GameState difficulty) {
+        if (difficulty == GameState::GAME_EASY) {
+            GRID_SIZE = 10; CELL_SIZE = 55; timeLimit = 300;
+            wordList = { "CAT", "DOG", "BIRD", "FISH", "TREE", "HOUSE", "MOUNTAIN" };
+        }
+        else if (difficulty == GameState::GAME_MEDIUM) {
+            GRID_SIZE = 12; CELL_SIZE = 50; timeLimit = 300;
+            wordList = { "ALGORITHM", "PROGRAMMING", "COMPUTER", "SOFTWARE", "HARDWARE",
+                        "NETWORK", "DATABASE", "SECURITY", "TEMPLATE", "COMPILER" };
+ }
+        else {
+            GRID_SIZE = 15; CELL_SIZE = 42; timeLimit = 360;
+            wordList = { "ARTIFICIAL", "INTELLIGENCE", "DEVELOPMENT", "OPTIMIZATION",
+                        "ARCHITECTURE", "CRYPTOGRAPHY", "PERFORMANCE", "DISTRIBUTED",
+                        "SCALABILITY", "INFRASTRUCTURE", "VIRTUALIZATION", "CONTAINERIZATION" };
+        }
+
+        int gridW = GRID_SIZE * CELL_SIZE;
+        int gridH = GRID_SIZE * CELL_SIZE;
+        int totalW = gridW + PANEL_WIDTH + 60;
+        marginX = (WINDOW_W - totalW) / 2.f;
+        marginY = (WINDOW_H - gridH) / 2.f;
+
+        generateGrid();
+        highlightGrid.assign(GRID_SIZE, std::vector<bool>(GRID_SIZE, false));
+        foundWords.clear();
+        foundWordPositions.clear();
+        selectedCells.clear();
+        hintsRemaining = 3;
+        showHint = false;
+        score = 0;
+        timeRemaining = timeLimit;
+        gameRunning = true;
+        gameWon = false;
+        gamePaused = false;
+        cellPulseTime = 0.f;
+        isParticleBursting = false;
+
+        particleSystem = std::make_unique<ParticleSystem>(800); // More particles
+        particleSystem->setEmitter({ -1000,-1000 });
+        particleSystem->stopEmission();
+
+        hintButton = std::make_unique<Button>("HINT (3)", mainFont, 18, sf::Vector2f(150, 48),
+            sf::Color(246, 173, 85), sf::Color(237, 137, 54), sf::Color(213, 119, 34));
+ pauseButton = std::make_unique<Button>("PAUSE", mainFont, 18, sf::Vector2f(150, 48),
+            sf::Color(72, 187, 120), sf::Color(56, 158, 94), sf::Color(40, 112, 67));
+        restartButton = std::make_unique<Button>("RESTART", mainFont, 18, sf::Vector2f(150, 48),
+            sf::Color(159, 122, 234), sf::Color(140, 100, 200), sf::Color(100, 70, 160));
+        logoutButton = std::make_unique<Button>("LOGOUT", mainFont, 18, sf::Vector2f(150, 48),
+            sf::Color(231, 76, 60), sf::Color(205, 53, 34), sf::Color(165, 33, 14));
+
+        float panelX = marginX + gridW + 40;
+        hintButton->setPosition({ panelX, marginY });
+        pauseButton->setPosition({ panelX, marginY + 60 });
+        restartButton->setPosition({ panelX, marginY + 120 });
+        logoutButton->setPosition({ panelX, marginY + 180 });
+
+        gameState = difficulty;
+
+        std::cout << "🎮 Game initialized with " << wordList.size() << " words" << std::endl;
+        std::cout << "📋 Word List: ";
+        for (const auto& word : wordList) {
+            std::cout << word << " ";
+        }
+        std::cout << std::endl;
+    }
+
+    void generateGrid() {
+        grid.assign(GRID_SIZE, std::vector<char>(GRID_SIZE, ' '));
+
+        placeWords();
+
+        std::string commonLetters = "AAAAAABCDEEEEEEFGHIIIIJKLMNOOOOOPQRSTUUUUVWXYZ";
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_int_distribution<> dis(0, (int)commonLetters.size() - 1);
+
+        for (int y = 0; y < GRID_SIZE; ++y) {
+            for (int x = 0; x < GRID_SIZE; ++x) {
+ if (grid[y][x] == ' ') {
+                    grid[y][x] = commonLetters[dis(gen)];
+                }
+            }
+        }
+
+        std::cout << "🔤 Final Grid:" << std::endl;
+        for (int y = 0; y < GRID_SIZE; ++y) {
+            for (int x = 0; x < GRID_SIZE; ++x) {
+                std::cout << grid[y][x] << " ";
+            }
+            std::cout << std::endl;
+        }
+    }
+
+    bool canPlaceWord(const std::string& word, int x, int y, int dx, int dy) {
+        int endX = x + dx * (static_cast<int>(word.length()) - 1);
+        int endY = y + dy * (static_cast<int>(word.length()) - 1);
+
+        if (endX < 0 || endX >= GRID_SIZE || endY < 0 || endY >= GRID_SIZE) {
+            return false;
+        }
+
+        for (size_t i = 0; i < word.length(); ++i) {
+            int cx = x + dx * static_cast<int>(i);
+            int cy = y + dy * static_cast<int>(i);
+
+            if (grid[cy][cx] != ' ' && grid[cy][cx] != word[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    void placeWord(const std::string& word, int x, int y, int dx, int dy) {
+        for (size_t i = 0; i < word.length(); ++i) {
+            int cx = x + dx * static_cast<int>(i);
+            int cy = y + dy * static_cast<int>(i);
+            grid[cy][cx] = word[i];
+        }
+ if (grid[y][x] == ' ') {
+                    grid[y][x] = commonLetters[dis(gen)];
+                }
+            }
+        }
+
+        std::cout << "🔤 Final Grid:" << std::endl;
+        for (int y = 0; y < GRID_SIZE; ++y) {
+            for (int x = 0; x < GRID_SIZE; ++x) {
+                std::cout << grid[y][x] << " ";
+            }
+            std::cout << std::endl;
+        }
+    }
+
+    bool canPlaceWord(const std::string& word, int x, int y, int dx, int dy) {
+        int endX = x + dx * (static_cast<int>(word.length()) - 1);
+        int endY = y + dy * (static_cast<int>(word.length()) - 1);
+
+        if (endX < 0 || endX >= GRID_SIZE || endY < 0 || endY >= GRID_SIZE) {
+            return false;
+        }
+
+        for (size_t i = 0; i < word.length(); ++i) {
+            int cx = x + dx * static_cast<int>(i);
+            int cy = y + dy * static_cast<int>(i);
+
+            if (grid[cy][cx] != ' ' && grid[cy][cx] != word[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    void placeWord(const std::string& word, int x, int y, int dx, int dy) {
+        for (size_t i = 0; i < word.length(); ++i) {
+            int cx = x + dx * static_cast<int>(i);
+            int cy = y + dy * static_cast<int>(i);
+            grid[cy][cx] = word[i];
+        }
+ }
+
+    void placeWords() {
+        std::vector<std::pair<int, int>> directions = {
+            {1, 0},   // Right
+            {0, 1},   // Down
+            {1, 1},   // Down-right
+            {1, -1},  // Up-right
+            {-1, 0},  // Left
+            {0, -1},  // Up
+            {-1, -1}, // Up-left
+            {-1, 1}   // Down-left
+        };
+
+        std::random_device rd;
+        std::mt19937 gen(rd());
+
+        int placedCount = 0;
+
+        for (const auto& word : wordList) {
+            bool placed = false;
+            int attempts = 0;
+
+            while (!placed && attempts < 1000) {
+                std::uniform_int_distribution<> posDist(0, GRID_SIZE - 1);
+                std::uniform_int_distribution<> dirDist(0, directions.size() - 1);
+
+  int startX = posDist(gen);
+                int startY = posDist(gen);
+                auto dir = directions[dirDist(gen)];
+
+                if (canPlaceWord(word, startX, startY, dir.first, dir.second)) {
+                    placeWord(word, startX, startY, dir.first, dir.second);
+                    placed = true;
+                    placedCount++;
+                    std::cout << "✅ SUCCESS: Placed '" << word << "' at (" << startX << "," << startY
+                        << ") direction (" << dir.first << "," << dir.second << ")" << std::endl;
+                }
+                attempts++;
+            }
+
+            if (!placed) {
+                std::cout << "❌ FAILED to place word: " << word << std::endl;
+            }
+        }
+
+        std::cout << "📊 " << placedCount << "/" << wordList.size() << " words placed successfully" << std::endl;
+    }
+
+    bool areCellsConnected(const std::vector<sf::Vector2i>& cells) {
+        if (cells.size() < 2) return false;
+
+        // Check if all cells are in a straight line
+        int dx = cells[1].x - cells[0].x;
+        int dy = cells[1].y - cells[0].y;
+
+        // Check if direction is valid (horizontal, vertical, or diagonal)
+        if (abs(dx) > 1 || abs(dy) > 1 || (dx == 0 && dy == 0)) {
+            return false;
+        }
+
+ // Check if all subsequent cells follow the same direction
+        for (size_t i = 1; i < cells.size(); ++i) {
+            int expectedX = cells[0].x + dx * static_cast<int>(i);
+            int expectedY = cells[0].y + dy * static_cast<int>(i);
+
+            if (cells[i].x != expectedX || cells[i].y != expectedY) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    std::pair<sf::Vector2i, sf::Vector2i> findWordPosition(const std::string& word) {
+        std::vector<std::pair<int, int>> directions = {
+            {1,0}, {0,1}, {1,1}, {1,-1}, {-1,0}, {0,-1}, {-1,-1}, {-1,1}
+        };
+
+        for (int y = 0; y < GRID_SIZE; ++y) {
+            for (int x = 0; x < GRID_SIZE; ++x) {
+                for (auto& dir : directions) {
+                    int endX = x + dir.first * (static_cast<int>(word.size()) - 1);
+                    int endY = y + dir.second * (static_cast<int>(word.size()) - 1);
+
+                    if (endX < 0 || endX >= GRID_SIZE || endY < 0 || endY >= GRID_SIZE) {
+                        continue;
+                    }
+
+                    bool match = true;
+                    for (size_t i = 0; i < word.size(); ++i) {
+                        int cx = x + dir.first * static_cast<int>(i);
+                        int cy = y + dir.second * static_cast<int>(i);
+
+                        if (grid[cy][cx] != word[i]) {
+                            match = false;
+                            break;
+                        }
+                    }
+
+                    if (match) {
+                        return { {x, y}, {endX, endY} };
+                    }
+                }
